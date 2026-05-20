@@ -201,8 +201,8 @@ let gameState: GameState = {
   lines: {},
   trains: {},
   economy: {
-    budget: 2500000, // starting budget in dollars
-    ticketPrice: 3.25, // starting ticket price (slightly higher for easier start)
+    budget: 5000000, // starting budget in dollars
+    ticketPrice: 4.50, // starting ticket price (higher for easier player start)
     revenue: 0,
     expenses: {
       maintenance: 0,
@@ -587,10 +587,10 @@ function deductHourlyExpenses() {
     l.statistics.currentTrainsCount = Object.values(gameState.trains).filter(t => t.lineId === l.id).length;
   });
 
-  // Calculative operational expense structure (Reduced slightly)
-  const mCost = numStations * 50 + numLines * 100;
-  const eCost = numTrains * 80 + numStations * 20;
-  const sCost = numStations * 70 + numTrains * 100;
+  // Calculative operational expense structure (Significantly Reduced for Easy Profit)
+  const mCost = numStations * 20 + numLines * 50;
+  const eCost = numTrains * 30 + numStations * 10;
+  const sCost = numStations * 30 + numTrains * 40;
 
   let loanPayments = 0;
   gameState.economy.loans.forEach((loan) => {
@@ -698,7 +698,7 @@ app.post('/api/game/city', (req, res) => {
     gameState.stations = {};
     gameState.lines = {};
     gameState.trains = {};
-    gameState.economy.budget = 2500000; // starting budget in dollars
+    gameState.economy.budget = 5000000; // starting budget in dollars
     gameState.economy.revenue = 0;
     gameState.economy.loans = [];
     gameState.economy.totalCarReduced = 0;
@@ -742,7 +742,7 @@ app.post('/api/game/city', (req, res) => {
     gameState.stations = {};
     gameState.lines = {};
     gameState.trains = {};
-    gameState.economy.budget = 2500000;
+    gameState.economy.budget = 5000000;
     gameState.economy.revenue = 0;
     gameState.economy.loans = [];
     gameState.economy.totalCarReduced = 0;
@@ -767,9 +767,9 @@ app.post('/api/game/station', (req, res) => {
     return res.status(400).json({ error: 'Missing name or coordinates' });
   }
 
-  const cost = 80000; // Build cost Reduced from 150000
+  const cost = 40000; // Build cost Reduced from 150000
   if (gameState.economy.budget < cost) {
-    return res.status(400).json({ error: 'Insufficient funds! Stations require $80,000.' });
+    return res.status(400).json({ error: 'Insufficient funds! Stations require $40,000.' });
   }
 
   const id = 'station-' + Date.now();
@@ -811,7 +811,7 @@ app.post('/api/game/station/upgrade', (req, res) => {
     return res.status(404).json({ error: 'Station not found' });
   }
 
-  const upgradeCost = station.upgradeLevel * 40000; // Reduced from 75000
+  const upgradeCost = station.upgradeLevel * 20000; // Reduced from 40000
   if (gameState.economy.budget < upgradeCost) {
     return res.status(400).json({ error: `Not enough funds! Level ${station.upgradeLevel + 1} station upgrade costs $${upgradeCost}.` });
   }
@@ -847,7 +847,7 @@ app.post('/api/game/line', (req, res) => {
     return res.status(400).json({ error: 'Missing line name or accent color' });
   }
 
-  const cost = 20000; // mapping charge Reduced from 50000
+  const cost = 10000; // mapping charge Reduced from 20000
   if (gameState.economy.budget < cost) {
     return res.status(400).json({ error: 'Insufficient funds to draw line!' });
   }
@@ -910,7 +910,7 @@ app.post('/api/game/line/stations', (req, res) => {
   let trackLayingCost = 0;
 
   if (newLength > oldStations.length) {
-    trackLayingCost = (newLength - oldStations.length) * 15000; // Line track lay fee Reduced from 45000
+    trackLayingCost = (newLength - oldStations.length) * 5000; // Line track lay fee Reduced from 15000
     if (gameState.economy.budget < trackLayingCost) {
       return res.status(400).json({ error: `Not enough budget to lay rails! Costs $${trackLayingCost}.` });
     }
@@ -992,7 +992,7 @@ app.post('/api/game/train', (req, res) => {
 
   const capVal = Math.max(40, Math.min(600, parseInt(capacity) || 120));
   const spdVal = Math.max(40, Math.min(200, parseInt(speed) || 80));
-  const trainCost = Math.floor(20000 + (capVal * 100) + (spdVal * 80)); // Reduced from 50000 + 200 + 150
+  const trainCost = Math.floor(10000 + (capVal * 50) + (spdVal * 40)); // Reduced significantly
 
   if (gameState.economy.budget < trainCost) {
     return res.status(400).json({ error: `Insufficient funds! This custom locomotive config costs $${trainCost.toLocaleString()}.` });

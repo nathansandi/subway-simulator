@@ -696,49 +696,63 @@ export default function App() {
     if (clickedPosition) {
       if (buildMode === 'build-station') {
         const cityId = gameState?.currentCityId;
-        let nameIdeas = ['Grand Terminal', 'Lexington Plaza', 'Waterfront Port', 'Symphony Circle', 'Broadway Central', 'South Gateway', 'Tech Junction', 'Central Station', 'Park Avenue', 'Exchange Hub'];
-        let suffix = ' Station';
+        const currentCityObj = gameState?.cities[cityId];
+        let suggestedName = '';
 
-        if (cityId === 'saopaulo') {
-          nameIdeas = [
-            'Estação da Luz', 'Vila Madalena', 'Consolação', 'Avenida Paulista', 'Faria Lima', 
-            'Liberdade', 'Pinheiros', 'Paraíso', 'Trianon-Masp', 'Butantã', 'República', 
-            'Mooca', 'Anhangabaú', 'Brigadeiro', 'Vila Mariana', 'Palmeiras-Barra Funda', 
-            'São Joaquim', 'Itaim Bibi', 'Berrini', 'Santo Amaro', 'Moema', 'Brooklin', 
-            'Fradique Coutinho', 'Sumaré', 'Clinicas', 'Vila Olimpia', 'Gatões', 'Cidade Jardim',
-            'Tatuapé', 'Penha', 'Carrão', 'Paraíso', 'Ana Rosa', 'São Bento', 'Sé'
-          ];
-          suffix = ''; // SP Metro names are fully customized natively
-        } else if (cityId === 'paris') {
-          nameIdeas = [
-            'Champs-Élysées', 'Châtelet', 'Gare de Lyon', 'Montmartre', 'Bastille', 
-            'République', 'Saint-Germain-des-Prés', 'Louvre-Rivoli', 'La Défense', 
-            'Opéra', 'Nation', 'Belleville', 'Pigalle', 'Saint-Michel', 'Montparnasse-Bienvenüe',
-            'Pont Neuf', 'Trocadéro', 'Anvers', 'Gare du Nord', 'Bastille'
-          ];
-          suffix = ''; // Paris Metro names contain local titles natively
-        } else if (cityId === 'nyc') {
-          nameIdeas = [
-            'Grand Central', 'Lexington Plaza', 'Times Square', 'Wall Street', 'Penn Station', 
-            'Canal Street', 'Astor Place', 'Columbus Circle', 'Rockefeller Center', 'Fulton Street', 
-            'Brooklyn Heights', 'Chelsea Park', 'World Trade Center', 'Bedford-Nostrand', 'Flushing-Main St',
-            'Astoria Blvd', 'St. George Terminal', 'Union Square'
-          ];
-          suffix = ' Station';
-        } else if (cityId === 'london') {
-          nameIdeas = [
-            'King\'s Cross St Pancras', 'Waterloo', 'Oxford Circus', 'Paddington', 'Victoria', 
-            'Piccadilly Circus', 'Canary Wharf', 'Camden Town', 'Westminster', 'London Bridge',
-            'Liverpool Street', 'South Kensington', 'Covent Garden', 'Elephant & Castle', 'Greenwich'
-          ];
-          suffix = '';
+        // NEW LOGIC: Try to find the nearest district (neighborhood) first
+        if (currentCityObj && currentCityObj.districts && currentCityObj.districts.length > 0) {
+          let minOrientedDist = Infinity;
+          let nearestDistName = '';
+
+          currentCityObj.districts.forEach(d => {
+            const dLat = clickedPosition[0] - d.lat;
+            const dLng = clickedPosition[1] - d.lng;
+            const dist = Math.sqrt(dLat * dLat + dLng * dLng);
+            if (dist < minOrientedDist) {
+              minOrientedDist = dist;
+              nearestDistName = d.name;
+            }
+          });
+
+          // If the nearest district is relatively close (approx within a reasonable city radius)
+          if (minOrientedDist < 0.05) {
+            suggestedName = nearestDistName;
+          }
         }
 
-        const chosenIdea = nameIdeas[Math.floor(Math.random() * nameIdeas.length)];
-        setStationFormName(chosenIdea + suffix);
+        // FALLBACK: Use city-specific random name pool if no close district was found
+        if (!suggestedName) {
+          let nameIdeas = ['Grand Terminal', 'Lexington Plaza', 'Waterfront Port', 'Symphony Circle', 'Broadway Central', 'South Gateway', 'Tech Junction', 'Central Station', 'Park Avenue', 'Exchange Hub'];
+          let suffix = ' Station';
+
+          if (cityId === 'saopaulo') {
+            nameIdeas = [
+              'Estação da Luz', 'Vila Madalena', 'Consolação', 'Avenida Paulista', 'Faria Lima', 
+              'Liberdade', 'Pinheiros', 'Paraíso', 'Trianon-Masp', 'Butantã', 'República', 
+              'Mooca', 'Anhangabaú', 'Brigadeiro', 'Vila Mariana', 'Palmeiras-Barra Funda', 
+              'São Joaquim', 'Itaim Bibi', 'Berrini', 'Santo Amaro', 'Moema', 'Brooklin', 
+              'Fradique Coutinho', 'Sumaré', 'Clinicas', 'Vila Olimpia', 'Gatões', 'Cidade Jardim',
+              'Tatuapé', 'Penha', 'Carrão', 'Paraíso', 'Ana Rosa', 'São Bento', 'Sé'
+            ];
+            suffix = '';
+          } else if (cityId === 'paris') {
+            nameIdeas = ['Champs-Élysées', 'Châtelet', 'Gare de Lyon', 'Montmartre', 'Bastille', 'République', 'Saint-Germain-des-Prés', 'Louvre-Rivoli', 'La Défense', 'Opéra', 'Nation', 'Belleville', 'Pigalle', 'Saint-Michel', 'Montparnasse-Bienvenüe'];
+            suffix = '';
+          } else if (cityId === 'nyc') {
+            nameIdeas = ['Grand Central', 'Lexington Plaza', 'Times Square', 'Wall Street', 'Penn Station', 'Canal Street', 'Astor Place', 'Columbus Circle', 'Rockefeller Center', 'Fulton Street', 'Brooklyn Heights', 'Chelsea Park'];
+            suffix = ' Station';
+          } else if (cityId === 'london') {
+            nameIdeas = ['King\'s Cross', 'Waterloo', 'Oxford Circus', 'Paddington', 'Victoria', 'Piccadilly Circus', 'Canary Wharf', 'Camden Town', 'Westminster', 'London Bridge'];
+            suffix = '';
+          }
+          
+          suggestedName = nameIdeas[Math.floor(Math.random() * nameIdeas.length)] + suffix;
+        }
+
+        setStationFormName(suggestedName);
         setShowStationModal(true);
       } else if (buildMode === 'select') {
-        showToast("💡 Pro-Tip: To build a station, click '🔨 Build Station ($80k)' in the map overlay first, then click on the map!");
+        showToast("💡 Pro-Tip: To build a station, click '🔨 Build Station ($40k)' in the map overlay first, then click on the map!");
         setClickedPosition(null);
       } else {
         setClickedPosition(null);
@@ -1232,7 +1246,7 @@ export default function App() {
                 <div className="bg-emerald-600/10 text-emerald-400 w-6 h-6 rounded-lg font-mono font-bold flex items-center justify-center shrink-0">1</div>
                 <div>
                   <p className="font-bold text-white mb-0.5">Establish Platforms</p>
-                  <p className="opacity-80">Toggle <span className="text-emerald-400 font-bold">🔨 Build Station</span> mode on the map menu, then click any empty space on the real-world map to establish a new station hub ($80,000).</p>
+                  <p className="opacity-80">Toggle <span className="text-emerald-400 font-bold">🔨 Build Station</span> mode on the map menu, then click any empty space on the real-world map to establish a new station hub ($40,000).</p>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -1846,7 +1860,7 @@ export default function App() {
                     className="flex-1 bg-emerald-600 hover:bg-emerald-500 font-bold p-2 rounded-xl text-white shadow transition-transform cursor-pointer"
                     id="confirm-build-station"
                   >
-                    Build ($150k)
+                    Build ($40k)
                   </button>
                 </div>
               </div>
@@ -2008,16 +2022,16 @@ export default function App() {
                               <div className="flex flex-col">
                                 <span className="text-[8px] text-slate-500 uppercase font-mono font-bold">Investimento</span>
                                 <span className="text-xs font-bold text-emerald-400 font-mono">
-                                  ${(20000 + newTrainCapacity * 100 + newTrainSpeed * 80).toLocaleString()}
+                                  ${(10000 + newTrainCapacity * 50 + newTrainSpeed * 40).toLocaleString()}
                                 </span>
                               </div>
 
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleDeployTrain(line.id); }}
-                                disabled={line.stationIds.length < 2 || gameState.economy.budget < (20000 + newTrainCapacity * 100 + newTrainSpeed * 80)}
+                                disabled={line.stationIds.length < 2 || gameState.economy.budget < (10000 + newTrainCapacity * 50 + newTrainSpeed * 40)}
                                 className={`font-mono text-[9px] uppercase font-bold px-2.5 py-1.5 rounded-lg text-white shadow transition-all active:scale-95 cursor-pointer flex items-center gap-1 ${
-                                  line.stationIds.length >= 2 && gameState.economy.budget >= (20000 + newTrainCapacity * 100 + newTrainSpeed * 80)
+                                  line.stationIds.length >= 2 && gameState.economy.budget >= (10000 + newTrainCapacity * 50 + newTrainSpeed * 40)
                                     ? 'bg-emerald-600 hover:bg-emerald-500 hover:shadow-emerald-500/10'
                                     : 'bg-slate-700 opacity-40 cursor-not-allowed'
                                 }`}
@@ -2105,7 +2119,7 @@ export default function App() {
                 className="w-full bg-indigo-600 hover:bg-indigo-550 text-white font-bold font-mono text-[10px] uppercase p-2 rounded-xl transition-all shadow-md cursor-pointer text-center"
                 id="establish-new-line-submit"
               >
-                Establish Line ($50,000)
+                Establish Line ($10,000)
               </button>
             </form>
           </div>
@@ -2132,7 +2146,7 @@ export default function App() {
               {(() => {
                 const station = gameState.stations[selectedStationId] as Station;
                 const totalWaiting = (Object.values(station.waitingPassengers) as number[]).reduce((a, b) => a + b, 0);
-                const upgradeFee = station.upgradeLevel * 75000;
+                const upgradeFee = station.upgradeLevel * 20000;
                 
                 return (
                   <div className="space-y-4 text-xs font-sans text-slate-300" id={`inspector-details-${station.id}`}>

@@ -1,8 +1,9 @@
 @import "tailwindcss";
+@import "leaflet/dist/leaflet.css";
 
-/* Fine-tune leaflet maps styles for beautiful dark-themed dashboard mapping */
+/* Fine-tune leaflet maps styles for light-themed dashboard mapping */
 .leaflet-container {
-  background: #090a0c !important; /* matches core Immersive theme #090a0c background */
+  background: #f8fafc !important; /* light slate background */
   width: 100% !important;
   height: 100% !important;
 }

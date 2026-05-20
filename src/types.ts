@@ -42,6 +42,11 @@ export interface Line {
   stationIds: string[]; // ordered station sequence
   type: TrackType;
   isActive: boolean;
+  statistics?: {
+    totalPassengersCarried: number;
+    currentTrainsCount: number;
+    dailyRevenue: number;
+  };
 }
 
 export interface Train {

@@ -24,6 +24,31 @@ const PORT = 3000;
 app.use(express.json());
 
 // Lazy GoogleGenAI Initialization Helper
+async function delay(ms: number) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(fn: () => Promise<T>, retries = 3, initialDelay = 1500): Promise<T> {
+  let lastError: any;
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error;
+      // Retry on 503 (Service Unavailable) or 429 (Too Many Requests)
+      const status = error?.status || error?.code || (error?.message?.includes('503') ? 503 : error?.message?.includes('429') ? 429 : null);
+      if (status === 503 || status === 429) {
+        const waitTime = initialDelay * Math.pow(2, i);
+        console.warn(`Gemini API error (${status}). Retrying in ${waitTime}ms... (Attempt ${i + 1}/${retries})`);
+        await delay(waitTime);
+        continue;
+      }
+      throw error;
+    }
+  }
+  throw lastError;
+}
+
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI | null {
   if (!aiClient) {
@@ -161,7 +186,9 @@ const DEFAULT_CITIES: { [id: string]: City } = {
       { id: 'sp-d11', name: 'Vila Mariana', lat: -23.5810, lng: -46.6410, radius: 0.024, type: 'residential', density: 88, population: 280000 },
       { id: 'sp-d12', name: 'Barra Funda', lat: -23.5250, lng: -46.6690, radius: 0.026, type: 'industrial', density: 76, population: 190000 },
       { id: 'sp-d13', name: 'Morumbi Sul', lat: -23.5980, lng: -46.7230, radius: 0.035, type: 'residential', density: 68, population: 320000 },
-      { id: 'sp-d14', name: 'Lapa Oeste', lat: -23.5220, lng: -46.7030, radius: 0.028, type: 'industrial', density: 72, population: 265000 }
+      { id: 'sp-d14', name: 'Lapa Oeste', lat: -23.5220, lng: -46.7030, radius: 0.028, type: 'industrial', density: 72, population: 265000 },
+      { id: 'sp-d15', name: 'Aeroporto Congonhas (CGH)', lat: -23.6273, lng: -46.6565, radius: 0.025, type: 'commercial', density: 99, population: 450000 },
+      { id: 'sp-d16', name: 'Aeroporto Guarulhos (GRU)', lat: -23.4356, lng: -46.4731, radius: 0.045, type: 'industrial', density: 95, population: 600000 }
     ]
   }
 };
@@ -333,53 +360,65 @@ function populateDailyCommuters() {
   // City-specific core commuting volumes
   let cityVolumeFactor = 1.0;
   if (gameState.currentCityId === 'saopaulo') {
-    cityVolumeFactor = 1.5; // Rush Hour Hub 1.5x commutes
+    cityVolumeFactor = 5.0; // High density Sao Paulo
   } else if (gameState.currentCityId === 'tokyo') {
-    cityVolumeFactor = 1.3; // Megacity density
+    cityVolumeFactor = 2.0;
   }
 
+  // Weigh districts by population/density for more realistic passenger flows
+  const weightedDistricts: {dist: any, weight: number}[] = districts.map(d => ({
+    dist: d,
+    weight: (d.population / 10000) * (d.density / 50) 
+  }));
+  const totalWeight = weightedDistricts.reduce((sum, d) => sum + d.weight, 0);
+
+  const getRandomWeightedDistrict = () => {
+    let r = Math.random() * totalWeight;
+    for (const wd of weightedDistricts) {
+      if (r < wd.weight) return wd.dist;
+      r -= wd.weight;
+    }
+    return districts[0];
+  };
+
   // Cross district travel simulation
-  const numCommuteAttempts = Math.floor((10 + Math.random() * 20) * multiplier * cityVolumeFactor);
+  const numCommuteAttempts = Math.floor((40 + Math.random() * 80) * multiplier * cityVolumeFactor);
   let newlySpawned = 0;
 
   for (let i = 0; i < numCommuteAttempts; i++) {
-    const startDist = districts[Math.floor(Math.random() * districts.length)];
-    const endDist = districts[Math.floor(Math.random() * districts.length)];
+    const startDist = getRandomWeightedDistrict();
+    const endDist = getRandomWeightedDistrict();
 
     if (startDist.id === endDist.id) continue;
 
-    // Check if player has built station near these districts
-    const startStation = stationsList.find(s => getDistance(s.lat, s.lng, startDist.lat, startDist.lng) <= startDist.radius + 0.05);
-    const endStation = stationsList.find(s => getDistance(s.lat, s.lng, endDist.lat, endDist.lng) <= endDist.radius + 0.05);
+    // Check if player has built station near these districts (Districts radius is in degrees, getDistance is in KM)
+    const catchmentKM = 2.5; // 2.5km catchment area beyond district radius
+    const startStation = stationsList.find(s => getDistance(s.lat, s.lng, startDist.lat, startDist.lng) <= (startDist.radius * 111) + catchmentKM);
+    const endStation = stationsList.find(s => getDistance(s.lat, s.lng, endDist.lat, endDist.lng) <= (endDist.radius * 111) + catchmentKM);
 
     if (startStation && endStation && startStation.id !== endStation.id) {
-      // Find whether a path connects them
-      const path = findTransitRoute(gameState.stations, gameState.lines, startStation.id, endStation.id);
-      if (path && path.length > 1) {
-        // Tickets sold!
-        const counts = Math.floor(2 + Math.random() * 8);
-        if (!startStation.waitingPassengers[endStation.id]) {
-          startStation.waitingPassengers[endStation.id] = 0;
-        }
+      // Tickets sold! (Removed path check to show demand even before lines are connected)
+      const counts = Math.floor(1 + Math.random() * 5);
+      if (!startStation.waitingPassengers[endStation.id]) {
+        startStation.waitingPassengers[endStation.id] = 0;
+      }
 
-        // Cap station capacity (São Paulo stations can handle 20% higher overflow capacity)
-        const totalWaiting = Object.values(startStation.waitingPassengers).reduce((a, b) => a + b, 0);
-        const capacityFactor = gameState.currentCityId === 'saopaulo' ? 1.8 : 1.5;
-        if (totalWaiting + counts <= startStation.capacity * capacityFactor) {
-          startStation.waitingPassengers[endStation.id] += counts;
-          newlySpawned += counts;
+      // Cap station capacity (São Paulo stations can handle overflow capacity)
+      const totalWaiting = Object.values(startStation.waitingPassengers).reduce((a, b) => a + b, 0);
+      const capacityFactor = gameState.currentCityId === 'saopaulo' ? 3.0 : 2.0;
+      if (totalWaiting + counts <= startStation.capacity * capacityFactor) {
+        startStation.waitingPassengers[endStation.id] += counts;
+        newlySpawned += counts;
 
-          // Financial impact
-          // London subways yield higher fare revenue (+25% premium fares)
-          const cityFareMultiplier = gameState.currentCityId === 'london' ? 1.25 : 1.0;
-          const fare = counts * gameState.economy.ticketPrice * cityFareMultiplier;
-          gameState.economy.revenue += fare;
-          gameState.economy.budget += fare;
+        // Financial impact (Initial ticket sale at entrance)
+        const cityFareMultiplier = gameState.currentCityId === 'london' ? 1.25 : 1.0;
+        const fare = counts * gameState.economy.ticketPrice * cityFareMultiplier;
+        gameState.economy.revenue += fare;
+        gameState.economy.budget += fare;
 
-          // Ecological impact
-          gameState.economy.totalCarReduced += Math.floor(counts * 0.75);
-          gameState.economy.totalCO2Saved += counts * 0.0025; // 2.5 kg saved per passenger route
-        }
+        // Ecological impact
+        gameState.economy.totalCarReduced += Math.floor(counts * 0.75);
+        gameState.economy.totalCO2Saved += counts * 0.0025;
       }
     }
   }
@@ -452,12 +491,20 @@ function processSimulationTick() {
         // Handle loading/unloading
         const currentStation = gameState.stations[train.currentStationId!];
         if (currentStation) {
+          // Initialize stats if missing
+          if (!line.statistics) {
+            line.statistics = { totalPassengersCarried: 0, currentTrainsCount: 0, dailyRevenue: 0 };
+          }
+
           // A. Unleash matching passengers whose route ends at this station or requires line-change transfers
           const unboarded = Math.min(train.occupancy, Math.floor(3 + Math.random() * 8));
           if (unboarded > 0) {
             train.occupancy = Math.max(0, train.occupancy - unboarded);
             gameState.activePassengersCount = Math.max(0, gameState.activePassengersCount - unboarded);
             gameState.deliveredPassengersCount += unboarded;
+            
+            // Track delivered for this line specifically
+            line.statistics.totalPassengersCarried += unboarded;
           }
 
           // B. Board waiting passengers who need to proceed onwards
@@ -468,6 +515,9 @@ function processSimulationTick() {
               const boarding = Math.min(count, spaces);
               currentStation.waitingPassengers[destId] -= boarding;
               train.occupancy += boarding;
+              
+              // Revenue tracking per line (estimate share of fare)
+              line.statistics.dailyRevenue += (boarding * gameState.economy.ticketPrice);
             }
           });
         }
@@ -528,6 +578,14 @@ function deductHourlyExpenses() {
   const numStations = Object.keys(gameState.stations).length;
   const numLines = Object.keys(gameState.lines).length;
   const numTrains = Object.keys(gameState.trains).length;
+
+  // Refresh train counts on line objects for frontend display
+  Object.values(gameState.lines).forEach(l => {
+    if (!l.statistics) {
+       l.statistics = { totalPassengersCarried: 0, currentTrainsCount: 0, dailyRevenue: 0 };
+    }
+    l.statistics.currentTrainsCount = Object.values(gameState.trains).filter(t => t.lineId === l.id).length;
+  });
 
   // Calculative operational expense structure
   const mCost = numStations * 80 + numLines * 150;
@@ -801,11 +859,28 @@ app.post('/api/game/line', (req, res) => {
     color,
     stationIds: [],
     type: type || 'underground',
-    isActive: true
+    isActive: true,
+    statistics: {
+      totalPassengersCarried: 0,
+      currentTrainsCount: 0,
+      dailyRevenue: 0
+    }
   };
 
   gameState.lines[id] = line;
   gameState.economy.budget -= cost;
+
+  res.json({ status: 'ok', gameState });
+});
+
+// POST: Update line name or color
+app.post('/api/game/line/update', (req, res) => {
+  const { lineId, name, color } = req.body;
+  const line = gameState.lines[lineId];
+  if (!line) return res.status(404).json({ error: 'Line not found' });
+
+  if (name) line.name = name;
+  if (color) line.color = color;
 
   res.json({ status: 'ok', gameState });
 });
@@ -818,10 +893,15 @@ app.post('/api/game/line/stations', (req, res) => {
     return res.status(404).json({ error: 'Line not found' });
   }
 
-  // Validate no duplicate stations on the same line
-  const uniqueStationIds = Array.from(new Set(stationIds));
-  if (uniqueStationIds.length !== stationIds.length) {
-    return res.status(400).json({ error: 'A station can only be linked once to a single line.' });
+  // Validate stations on the same line. 
+  // We allow the first and last station to be the same to create circular lines (loops).
+  // But otherwise we prevent duplicates.
+  const isCircular = stationIds.length > 2 && stationIds[0] === stationIds[stationIds.length - 1];
+  const checkSlice = isCircular ? stationIds.slice(0, -1) : stationIds;
+  const uniqueStationIds = Array.from(new Set(checkSlice));
+  
+  if (uniqueStationIds.length !== checkSlice.length) {
+    return res.status(400).json({ error: 'Uma estação só pode aparecer uma vez por linha (exceto em loops).' });
   }
 
   // Cost calculation for track laying per pair of stations
@@ -1111,46 +1191,58 @@ app.post('/api/gemini/advisor', async (req, res) => {
       }
     `;
 
-    const response = await ai.models.generateContent({
-      model: 'gemini-3.5-flash',
-      contents: prompt,
-      config: {
-        responseMimeType: 'application/json',
-        responseSchema: {
-          type: Type.OBJECT,
-          properties: {
-            report: { type: Type.STRING },
-            event: {
-              type: Type.OBJECT,
-              properties: {
-                title: { type: Type.STRING },
-                description: { type: Type.STRING },
-                type: { type: Type.STRING },
-                severity: { type: Type.STRING },
-                passengerMultiplier: { type: Type.NUMBER },
-                speedMultiplier: { type: Type.NUMBER },
-                durationTicks: { type: Type.NUMBER }
-              },
-              required: ["title", "description", "type", "severity", "passengerMultiplier", "speedMultiplier", "durationTicks"]
-            },
-            posts: {
-              type: Type.ARRAY,
-              items: {
+    let response;
+    try {
+      response = await withRetry(() => ai.models.generateContent({
+        model: 'gemini-3.5-flash',
+        contents: prompt,
+        config: {
+          responseMimeType: 'application/json',
+          responseSchema: {
+            type: Type.OBJECT,
+            properties: {
+              report: { type: Type.STRING },
+              event: {
                 type: Type.OBJECT,
                 properties: {
-                  handle: { type: Type.STRING },
-                  avatar: { type: Type.STRING },
-                  text: { type: Type.STRING },
-                  sentiment: { type: Type.STRING }
+                  title: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  type: { type: Type.STRING },
+                  severity: { type: Type.STRING },
+                  passengerMultiplier: { type: Type.NUMBER },
+                  speedMultiplier: { type: Type.NUMBER },
+                  durationTicks: { type: Type.NUMBER }
                 },
-                required: ["handle", "avatar", "text", "sentiment"]
+                required: ["title", "description", "type", "severity", "passengerMultiplier", "speedMultiplier", "durationTicks"]
+              },
+              posts: {
+                type: Type.ARRAY,
+                items: {
+                  type: Type.OBJECT,
+                  properties: {
+                    handle: { type: Type.STRING },
+                    avatar: { type: Type.STRING },
+                    text: { type: Type.STRING },
+                    sentiment: { type: Type.STRING }
+                  },
+                  required: ["handle", "avatar", "text", "sentiment"]
+                }
               }
-            }
-          },
-          required: ["report", "posts"]
+            },
+            required: ["report", "posts"]
+          }
         }
-      }
-    });
+      }));
+    } catch (apiErr) {
+      console.error("Gemini Advisor failure (fallback triggered):", apiErr);
+      return res.json({
+        report: "**AI Advisor (Offline Mode)**: The transit network is being analyzed by backup systems. Focus on maintaining high maintenance levels across all stations and ensuring your budget remains positive during localized rush hours.",
+        event: null,
+        posts: [
+          { handle: "@SystemAdvisory", avatar: "🤖", text: "Heuristic backup mode active. AI analysis temporarily unavailable due to capacity.", sentiment: "neutral" }
+        ]
+      });
+    }
 
     const body = response.text ? JSON.parse(response.text.trim()) : null;
     if (body) {

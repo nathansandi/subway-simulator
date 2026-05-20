@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import L from 'leaflet';
 import {
   Play,
@@ -38,6 +38,7 @@ export default function App() {
   // Builder tools options
   const [buildMode, setBuildMode] = useState<'select' | 'build-station' | 'edit-line-tracks'>('select');
   const [selectedLineIdForTracks, setSelectedLineIdForTracks] = useState<string | null>(null);
+  const [trackExtensionSourceId, setTrackExtensionSourceId] = useState<string | null>(null);
 
   // Create forms state
   const [stationFormName, setStationFormName] = useState('');
@@ -54,6 +55,7 @@ export default function App() {
 
   // Gemini analyst state
   const [loadingAi, setLoadingAi] = useState(false);
+  const [zoomLevel, setZoomLevel] = useState(12);
   const [aiReport, setAiReport] = useState<string | null>(null);
 
   // Active instructions card overlay
@@ -64,7 +66,7 @@ export default function App() {
   const [serverSaves, setServerSaves] = useState<any[]>([]);
 
   // Track rendering style: 0.0 is straight, and up to 0.16 is curved
-  const [trackCurvature, setTrackCurvature] = useState<number>(0.08);
+  const [trackCurvature, setTrackCurvature] = useState<number>(0.0);
 
   // Density Overlay and District Filter controls
   const [showDensity, setShowDensity] = useState(true);
@@ -248,6 +250,62 @@ export default function App() {
     }, 4500);
   };
 
+  // Bezier curve calculations for organic/flexible visuals with parallel offset tapering
+  const getBezierCurvePoints = (
+    p1: [number, number],
+    p2: [number, number],
+    numSteps: number = 32,
+    offset: { amt: number } | null = null,
+    isCanonical: boolean = true
+  ): [number, number][] => {
+    const dy = p2[0] - p1[0];
+    const dx = p2[1] - p1[1];
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist === 0) return [p1, p2];
+
+    const nyChord = -dx / dist;
+    const nxChord = dy / dist;
+    const arcOffset = dist * trackCurvature;
+    const cpLat = (p1[0] + p2[0]) / 2 + nyChord * arcOffset;
+    const cpLng = (p1[1] + p2[1]) / 2 + nxChord * arcOffset;
+
+    const bezierPoints: [number, number][] = [];
+    for (let s = 0; s <= numSteps; s++) {
+      const t = s / numSteps;
+      const mt = 1 - t;
+
+      // Quadratic Bezier: B(t) = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
+      const baseLat = mt * mt * p1[0] + 2 * mt * t * cpLat + t * t * p2[0];
+      const baseLng = mt * mt * p1[1] + 2 * mt * t * cpLng + t * t * p2[1];
+
+      if (offset && offset.amt !== 0) {
+        // Calculate tangent B'(t) = 2(1-t)(P1-P0) + 2t(P2-P1)
+        const dLat = 2 * mt * (cpLat - p1[0]) + 2 * t * (p2[0] - cpLat);
+        const dLng = 2 * mt * (cpLng - p1[1]) + 2 * t * (p2[1] - cpLng);
+        const dDist = Math.sqrt(dLat * dLat + dLng * dLng);
+        
+        if (dDist > 0) {
+          const tny = -dLng / dDist; // Perpendicular to tangent
+          const tnx = dLat / dDist;
+          
+          // Taper: quickly reach full offset, stay parallel, then quickly converge toward stations
+          // Use a sharp power-sin for a flat top (very parallel into stations)
+          const taper = Math.pow(Math.sin(t * Math.PI), 0.15);
+          
+          // Normalize offset direction based on canonical station order of the segment
+          const multiplier = isCanonical ? 1 : -1;
+          
+          bezierPoints.push([baseLat + tny * offset.amt * multiplier * taper, baseLng + tnx * offset.amt * multiplier * taper]);
+          continue;
+        }
+      }
+
+      bezierPoints.push([baseLat, baseLng]);
+    }
+    return bezierPoints;
+  };
+
   // 1. Initial mounting reload loops
   useEffect(() => {
     fetchGameState();
@@ -271,7 +329,7 @@ export default function App() {
     }
   };
 
-  // 2. Leaflet Map setup and dynamic refresh with Mapbox layers
+  // 2. Leaflet Map setup and dynamic refresh with OpenStreetMap / CartoDB layers
   useEffect(() => {
     if (!mapContainerRef.current) return;
 
@@ -284,14 +342,11 @@ export default function App() {
         attributionControl: false
       });
 
-      // Mapbox Dark high-resolution tile layer with token from environment
-      const mapboxToken = import.meta.env.VITE_MAPBOX_TOKEN;
-      L.tileLayer(`https://api.mapbox.com/styles/v1/mapbox/dark-v11/tiles/512/{z}/{x}/{y}?access_token=${mapboxToken}`, {
-        attribution: '© <a href="https://www.mapbox.com/about/maps/">Mapbox</a> © <a href="http://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-        tileSize: 512,
-        zoomOffset: -1,
-        maxZoom: 18,
-        minZoom: 9
+      // CartoDB Voyager (OSM Based, Free, Richer Labels and colors)
+      L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>',
+        subdomains: 'abcd',
+        maxZoom: 20
       }).addTo(map);
 
       // Create overlay feature group layer
@@ -302,17 +357,17 @@ export default function App() {
 
       // Click to build event hook
       map.on('click', (e: L.LeafletMouseEvent) => {
-        // We only trigger station modal placement if actively in build-station mode
         setClickedPosition([e.latlng.lat, e.latlng.lng]);
+      });
+
+      map.on('zoomend', () => {
+        setZoomLevel(map.getZoom());
       });
 
       // Invalidate map scale to force container size refresh and prevent blank rendering
       setTimeout(() => {
         map.invalidateSize();
-      }, 150);
-      setTimeout(() => {
-        map.invalidateSize();
-      }, 800);
+      }, 400);
     }
   }, [gameState !== null]);
 
@@ -332,6 +387,257 @@ export default function App() {
       resizeObserver.disconnect();
     };
   }, [gameState !== null]);
+
+  // Vector render recalculator whenever gameState modifies
+  useEffect(() => {
+    const map = mapInstanceRef.current;
+    const overlay = overlayLayerRef.current;
+    if (!map || !overlay || !gameState) return;
+
+    // Clear old tracks, trains, districts
+    overlay.clearLayers();
+
+    const city = gameState.cities[gameState.currentCityId];
+    if (!city) return;
+
+    const segmentToLinesMap: { [key: string]: string[] } = {};
+    const getSegmentKey = (id1: string, id2: string) => id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`;
+
+    // A. Draw Districts
+    if (showDensity) {
+      city.districts.forEach((dist) => {
+        if (districtTypeFilter !== 'all' && dist.type !== districtTypeFilter) return;
+        if (dist.density < minDensityFilter) return;
+
+        const colorMap: Record<string, string> = {
+          commercial: '#3b82f6',
+          residential: '#10b981',
+          leisure: '#f59e0b',
+          industrial: '#8b5cf6',
+          tourism: '#ec4899'
+        };
+        const color = colorMap[dist.type] || '#64748b';
+        const isHovered = activeDistrictId === dist.id;
+
+        const mainCircle = L.circle([dist.lat, dist.lng], {
+          radius: dist.radius * 85000,
+          color: color,
+          weight: isHovered ? 2.5 : 1.2,
+          fillColor: color,
+          fillOpacity: isHovered ? 0.2 : 0.08,
+          interactive: true
+        });
+
+        const tooltipHtml = `
+          <div class="px-2 py-1.5 font-mono text-[10px] text-white bg-slate-950/95 border border-white/10 rounded shadow-xl">
+            <p class="font-bold border-b border-white/10 mb-1 pb-0.5">${dist.name}</p>
+            <p><span class="opacity-50">Pop:</span> ${(dist.population).toLocaleString('pt-BR')}</p>
+            <p><span class="opacity-50">Densidade:</span> ${dist.density}%</p>
+          </div>
+        `;
+        mainCircle.bindTooltip(tooltipHtml, { sticky: true, className: 'custom-district-tooltip' });
+        mainCircle.on('mouseover', () => setActiveDistrictId(dist.id));
+        mainCircle.on('mouseout', () => setActiveDistrictId(null));
+        mainCircle.addTo(overlay);
+      });
+    }
+
+    // B. Collect segments for offsetting overlapping lines
+    Object.values(gameState.lines).forEach((line) => {
+      const l = line as Line;
+      if (!l.isActive || l.stationIds.length < 2) return;
+      for (let i = 0; i < l.stationIds.length - 1; i++) {
+        const key = getSegmentKey(l.stationIds[i], l.stationIds[i+1]);
+        if (!segmentToLinesMap[key]) segmentToLinesMap[key] = [];
+        if (!segmentToLinesMap[key].includes(l.id)) segmentToLinesMap[key].push(l.id);
+      }
+    });
+
+    // C. Draw Metro Lines
+    const lines = Object.values(gameState.lines) as Line[];
+    // Sort to draw the selected/editing line last so it appears on top
+    const sortedLines = [...lines].sort((a, b) => {
+      if (a.id === selectedLineIdForTracks) return 1;
+      if (b.id === selectedLineIdForTracks) return -1;
+      return 0;
+    });
+
+    sortedLines.forEach((l) => {
+      if (!l.isActive || l.stationIds.length < 2) return;
+
+      const isEditing = selectedLineIdForTracks === l.id;
+
+      for (let i = 0; i < l.stationIds.length - 1; i++) {
+        const s1 = gameState.stations[l.stationIds[i]];
+        const s2 = gameState.stations[l.stationIds[i+1]];
+        if (!s1 || !s2) continue;
+
+        const key = getSegmentKey(s1.id, s2.id);
+        const sharedLines = segmentToLinesMap[key] || [];
+        const index = sharedLines.indexOf(l.id);
+        const N = sharedLines.length;
+
+        const dy = s2.lat - s1.lat;
+        const dx = s2.lng - s1.lng;
+        const dist = Math.sqrt(dx*dx + dy*dy);
+
+        let parallelOffset: { amt: number } | null = null;
+        if (dist > 0 && N > 1 && index !== -1) {
+          const shift = index - (N-1)/2;
+          const zoomFactor = Math.pow(2, 14 - zoomLevel);
+          // 0.0008 spacing for very clear distinction even at high zoom
+          const spacing = 0.0008 * zoomFactor; 
+          parallelOffset = { amt: shift * spacing };
+        }
+
+        const curve = getBezierCurvePoints([s1.lat, s1.lng], [s2.lat, s2.lng], 40, parallelOffset, s1.id < s2.id);
+        L.polyline(curve, { 
+          color: l.color, 
+          weight: isEditing ? 6 : 4, 
+          opacity: 0.95, 
+          lineCap: 'round',
+          lineJoin: 'round',
+          interactive: false
+        }).addTo(overlay);
+      }
+    });
+
+    // D. Draw Stations
+    const stationLinesMap: Record<string, Line[]> = {};
+    Object.values(gameState.lines).forEach((l) => {
+      const line = l as Line;
+      if (!line.isActive) return;
+      line.stationIds.forEach((sid) => {
+        if (!stationLinesMap[sid]) stationLinesMap[sid] = [];
+        if (!stationLinesMap[sid].find(ex => ex.id === line.id)) {
+          stationLinesMap[sid].push(line);
+        }
+      });
+    });
+
+    const editingLine = selectedLineIdForTracks ? gameState.lines[selectedLineIdForTracks] : null;
+    const endStationIds = editingLine?.stationIds || [];
+    const actualEnds = endStationIds.length > 0 ? [endStationIds[0], endStationIds[endStationIds.length - 1]] : [];
+
+    Object.values(gameState.stations).forEach((station) => {
+      const s = station as Station;
+      const isSelected = selectedStationId === s.id;
+      const isLineEnd = actualEnds.includes(s.id);
+      const isExtensionSource = trackExtensionSourceId === s.id;
+      const totalWait = Object.values(s.waitingPassengers).reduce((a, b) => (a as number) + (b as number), 0) as number;
+      
+      const connections = stationLinesMap[s.id] || [];
+      const isHub = connections.length >= 2;
+      const isOvercrowded = totalWait > 25;
+      const isBroken = s.maintenanceLevel < 20;
+
+      const borderColor = isBroken ? '#ef4444' : isSelected ? '#34d399' : (isExtensionSource ? '#fbbf24' : (isLineEnd ? editingLine?.color || '#3b82f6' : '#fff'));
+      const borderClass = isSelected ? 'scale-125 border-emerald-400' : (isExtensionSource ? 'scale-150 border-amber-400 z-[1000] ring-4 ring-amber-400/30' : (isLineEnd ? 'scale-110 border-2' : isHub ? 'border-indigo-400 border-2' : 'border-white/40'));
+
+      const connectionDots = connections
+        .map(l => `<div class="w-1.5 h-1.5 rounded-full border border-black/20" style="background-color: ${l.color}"></div>`)
+        .join('');
+
+      const icon = L.divIcon({
+        className: 'station-marker',
+        html: `
+          <div class="relative flex items-center justify-center">
+            ${isHub ? `<div class="absolute -top-4 -left-1 bg-indigo-500 text-[7px] text-white font-bold px-1 rounded-sm uppercase tracking-tighter shadow-md z-[60]">HUB</div>` : ''}
+            ${isOvercrowded || isBroken ? `
+              <div class="absolute -top-4 -right-1 ${isBroken ? 'bg-red-500' : 'bg-amber-500'} text-white rounded-full w-3.5 h-3.5 flex items-center justify-center text-[10px] font-bold shadow-lg animate-pulse z-[60]">
+                ${isBroken ? '!' : '△'}
+              </div>
+            ` : ''}
+            <div class="w-4 h-4 rounded-full border-2 bg-slate-900 shadow-xl transition-all ${borderClass}" style="border-color: ${borderColor}">
+              <div class="w-1.5 h-1.5 rounded-full bg-white m-auto mt-0.5 ${isLineEnd || isExtensionSource ? 'animate-pulse' : ''}"></div>
+            </div>
+            
+            <div class="absolute top-4.5 flex gap-0.5 justify-center w-full">
+              ${connectionDots}
+            </div>
+
+            <div class="absolute -bottom-8 bg-slate-950 text-[9px] font-mono px-1 border border-white/10 rounded whitespace-nowrap z-50">
+              ${s.name} ${totalWait > 0 ? `(${totalWait})` : ''}
+            </div>
+          </div>
+        `,
+        iconSize: [24, 24]
+      });
+
+      const marker = L.marker([s.lat, s.lng], { icon });
+      marker.on('click', () => {
+        if (buildMode === 'edit-line-tracks' && selectedLineIdForTracks) {
+          handleLinkStationToLine(selectedLineIdForTracks, s.id);
+        } else {
+          setSelectedStationId(s.id);
+          setSelectedLineId(null);
+        }
+      });
+      marker.addTo(overlay);
+    });
+
+    // E. Draw Trains
+    Object.values(gameState.trains).forEach((train) => {
+      const t = train as Train;
+      const line = gameState.lines[t.lineId];
+      if (!line) return;
+      const isBroken = t.status === 'broken';
+
+      let renderLat = t.lat;
+      let renderLng = t.lng;
+
+      // VISUAL SNAPPING: If train is moving, snap its render position to the line's curved geometry
+      if (t.status === 'running' && line.stationIds.length >= 2) {
+        const targetId = line.stationIds[t.targetStationIndex];
+        const prevIdx = t.direction === 1 ? t.targetStationIndex - 1 : t.targetStationIndex + 1;
+        const prevId = line.stationIds[prevIdx];
+        
+        if (prevId && targetId) {
+          const s1 = gameState.stations[prevId];
+          const s2 = gameState.stations[targetId];
+          if (s1 && s2) {
+            const key = getSegmentKey(s1.id, s2.id);
+            const sharedLines = segmentToLinesMap[key] || [t.lineId];
+            const index = sharedLines.indexOf(t.lineId);
+            const zoomFactor = Math.pow(2, 14 - zoomLevel);
+            const offsetAmt = (index !== -1) ? (index - (sharedLines.length - 1) / 2) * (0.0008 * zoomFactor) : 0;
+            
+            // Progress Calculation (chord-based interpolation ratio)
+            const dy = s2.lat - s1.lat;
+            const dx = s2.lng - s1.lng;
+            const distTotal = Math.sqrt(dx*dx + dy*dy);
+            const distCurrent = Math.sqrt(Math.pow(t.lat - s1.lat, 2) + Math.pow(t.lng - s1.lng, 2));
+            const progress = distTotal > 0 ? Math.min(1.0, distCurrent / distTotal) : 0;
+
+            const curvePoints = getBezierCurvePoints([s1.lat, s1.lng], [s2.lat, s2.lng], 40, { amt: offsetAmt }, s1.id < s2.id);
+            const pIdx = Math.floor(progress * (curvePoints.length - 1));
+            const pt = curvePoints[pIdx];
+            if (pt) {
+              renderLat = pt[0];
+              renderLng = pt[1];
+            }
+          }
+        }
+      }
+
+      const icon = L.divIcon({
+        className: 'train-marker',
+        html: `
+          <div class="bg-slate-950 border border-white/10 rounded p-0.5 shadow-lg scale-90 flex items-center gap-1" style="background-color: ${isBroken ? '#ef4444' : line.color}">
+            <p class="text-[8px] font-bold text-white px-0.5">🚇</p>
+            <p class="text-[7px] font-mono text-white pr-1">${t.occupancy}</p>
+          </div>
+        `,
+        iconSize: [36, 20]
+      });
+
+      L.marker([renderLat, renderLng], { icon, interactive: false }).addTo(overlay);
+    });
+
+  }, [gameState, selectedStationId, activeDistrictId, buildMode, selectedLineIdForTracks, trackExtensionSourceId, zoomLevel, showDensity, districtTypeFilter, minDensityFilter, trackCurvature]);
+
+  // Handle map click for station building is handled by Leaflet .on('click')
+  // No longer needed: onMapClick
 
   // Sync click coords to raise build popup
   useEffect(() => {
@@ -387,422 +693,6 @@ export default function App() {
       }
     }
   }, [clickedPosition, buildMode]);
-
-  // Vector render recalculator whenever gameState modifies
-  useEffect(() => {
-    const map = mapInstanceRef.current;
-    const overlay = overlayLayerRef.current;
-    if (!map || !overlay || !gameState) return;
-
-    // Clear old tracks, trains, districts
-    overlay.clearLayers();
-
-    const city = gameState.cities[gameState.currentCityId];
-    if (!city) return;
-
-    // Bezier curve calculations for organic/flexible visuals
-    const getBezierCurvePoints = (
-      p1: [number, number],
-      p2: [number, number],
-      numSteps: number = 24
-    ): [number, number][] => {
-      const isOrdered = p1[0] < p2[0] || (p1[0] === p2[0] && p1[1] < p2[1]);
-      const start = isOrdered ? p1 : p2;
-      const end = isOrdered ? p2 : p1;
-
-      const dy = end[0] - start[0];
-      const dx = end[1] - start[1];
-      const dist = Math.sqrt(dx * dx + dy * dy);
-
-      if (dist === 0) return [p1, p2];
-
-      const ny = -dx / dist;
-      const nx = dy / dist;
-      
-      const curvature = trackCurvature; // Subtle organic curves for flexible tracks
-      const offsetAmount = dist * curvature;
-
-      const cpLat = (start[0] + end[0]) / 2 + ny * offsetAmount;
-      const cpLng = (start[1] + end[1]) / 2 + nx * offsetAmount;
-
-      const bezierPoints: [number, number][] = [];
-      for (let s = 0; s <= numSteps; s++) {
-        const t = s / numSteps;
-        const mt = 1 - t;
-
-        const lat = mt * mt * p1[0] + 2 * mt * t * cpLat + t * t * p2[0];
-        const lng = mt * mt * p1[1] + 2 * mt * t * cpLng + t * t * p2[1];
-        bezierPoints.push([lat, lng]);
-      }
-
-      return bezierPoints;
-    };
-
-    // A. Draw green, blue, yellow District semi-opaque circular domains with real-world scales & dynamic pulsing/interaction
-    if (showDensity) {
-      city.districts.forEach((dist) => {
-        // Category filtering
-        if (districtTypeFilter !== 'all' && dist.type !== districtTypeFilter) return;
-        // Density threshold filtering
-        if (dist.density < minDensityFilter) return;
-
-        const colorMap = {
-        commercial: '#3b82f6', // blue
-        residential: '#10b981', // green
-        leisure: '#f59e0b', // gold/orange
-        industrial: '#8b5cf6', // purple
-        tourism: '#ec4899' // pink
-      };
-      const color = colorMap[dist.type] || '#64748b';
-
-      // Calculate dynamic simulated activity coefficient based on hour
-      const hour = gameState.hour;
-      let activityFactor = 1.0;
-      let statusDesc = 'Fluxo Normal';
-      if (dist.type === 'residential') {
-        if ((hour >= 7 && hour <= 9) || (hour >= 17 && hour <= 19)) {
-          activityFactor = 1.8;
-          statusDesc = 'Pico de Deslocamento Morning/Evening Rush';
-        } else if (hour >= 22 || hour <= 5) {
-          activityFactor = 0.4;
-          statusDesc = 'Período Silencioso Noturno';
-        }
-      } else if (dist.type === 'commercial' || dist.type === 'industrial') {
-        if (hour >= 9 && hour <= 17) {
-          activityFactor = 1.5;
-          statusDesc = 'Horário Comercial Ativo';
-        } else if (hour >= 20 || hour <= 6) {
-          activityFactor = 0.3;
-          statusDesc = 'Fora do Horário Ativo';
-        }
-      } else if (dist.type === 'leisure' || dist.type === 'tourism') {
-        if (hour >= 11 && hour <= 21) {
-          activityFactor = 1.7;
-          statusDesc = 'Pico de Movimento de Lazer';
-        } else if (hour >= 23 || hour <= 8) {
-          activityFactor = 0.2;
-          statusDesc = 'Atração Fechada';
-        }
-      }
-
-      const isHovered = activeDistrictId === dist.id;
-
-      // Pulse calculations (creates a beautiful breathing ambient glow effect on tick/tick shifts)
-      const baseFillOpacity = isHovered ? 0.24 : 0.08;
-      const pulsingOpacity = baseFillOpacity + (Math.sin(Date.now() / 1500 + dist.lat) * 0.02);
-      const finalFillOpacity = Math.max(0.04, Math.min(0.35, pulsingOpacity * activityFactor));
-
-      // 1. Draw solid outer border with dash arrays representing sonar scanner
-      const realRadiusMeters = dist.radius * 85000;
-
-      const mainCircle = L.circle([dist.lat, dist.lng], {
-        radius: realRadiusMeters,
-        color: color,
-        weight: isHovered ? 2.5 : 1.2,
-        dashArray: isHovered ? '2,5' : '5,8',
-        fillColor: color,
-        fillOpacity: finalFillOpacity,
-        interactive: true
-      });
-
-      // 2. Beautiful inner solid mini center core indicator
-      const centerCore = L.circle([dist.lat, dist.lng], {
-        radius: realRadiusMeters * 0.08,
-        color: color,
-        weight: 1.5,
-        fillColor: color,
-        fillOpacity: 0.5,
-        interactive: false
-      });
-
-      // 3. Futuristic informative HTML Tooltip
-      const activityPercentage = (activityFactor * 100).toFixed(0);
-      const tooltipHtml = `
-        <div class="p-2.5 font-mono text-[10px] text-white bg-slate-950/95 border border-white/10 rounded-xl shadow-[0_4px_12px_rgba(0,0,0,0.5)] leading-relaxed min-w-[150px]">
-          <div class="flex items-center gap-1.5 mb-1.5 border-b border-white/5 pb-1">
-            <span class="w-2 h-2 rounded-full" style="background-color: ${color}"></span>
-            <p class="font-bold text-[11px] text-slate-100 uppercase tracking-tight truncate">${dist.name}</p>
-          </div>
-          <div class="space-y-1 text-slate-300">
-            <p><span class="opacity-50">Zona:</span> <span class="capitalize font-sans font-bold" style="color: ${color}">${dist.type}</span></p>
-            <p><span class="opacity-50">População:</span> <span class="text-slate-100 font-bold">${(dist.population).toLocaleString('pt-BR')} hab</span></p>
-            <p><span class="opacity-50">Densidade:</span> <span class="text-slate-100 font-bold">${dist.density}%</span></p>
-            <p><span class="opacity-50">Atividade:</span> <span class="text-amber-400 font-bold font-sans">${activityPercentage}% (${statusDesc})</span></p>
-          </div>
-          <p class="text-[8px] opacity-40 italic mt-2 border-t border-white/5 pt-1 text-center font-sans">Clique para focar câmera</p>
-        </div>
-      `;
-
-      mainCircle.bindTooltip(tooltipHtml, {
-        sticky: true,
-        className: 'custom-district-tooltip',
-        opacity: 0.98
-      });
-
-      // Set interactive handlers to highlight in LHS Zonal Census list card & fly camera
-      mainCircle.on('mouseover', () => {
-        setActiveDistrictId(dist.id);
-      });
-      mainCircle.on('mouseout', () => {
-        setActiveDistrictId(null);
-      });
-      mainCircle.on('click', () => {
-        map.flyTo([dist.lat, dist.lng], 13.5);
-        showToast(`📍 Focando em ${dist.name}`);
-      });
-
-      mainCircle.addTo(overlay);
-      centerCore.addTo(overlay);
-    });
-  }
-
-    // B. Collect station segments to offset overlapping lines beautifully (dynamic parallel tracks)
-    const segmentToLinesMap: { [key: string]: string[] } = {};
-    const getSegmentKey = (id1: string, id2: string) => id1 < id2 ? `${id1}_${id2}` : `${id2}_${id1}`;
-
-    (Object.values(gameState.lines) as Line[]).forEach((line) => {
-      if (!line.isActive || line.stationIds.length < 2) return;
-      for (let i = 0; i < line.stationIds.length - 1; i++) {
-        const id1 = line.stationIds[i];
-        const id2 = line.stationIds[i + 1];
-        const key = getSegmentKey(id1, id2);
-        if (!segmentToLinesMap[key]) {
-          segmentToLinesMap[key] = [];
-        }
-        if (!segmentToLinesMap[key].includes(line.id)) {
-          segmentToLinesMap[key].push(line.id);
-        }
-      }
-    });
-
-    Object.keys(segmentToLinesMap).forEach((key) => {
-      segmentToLinesMap[key].sort();
-    });
-
-    // Draw metro route colored Polylines segment-by-segment with visual offsets
-    (Object.values(gameState.lines) as Line[]).forEach((line) => {
-      if (!line.isActive || line.stationIds.length < 2) return;
-      
-      for (let i = 0; i < line.stationIds.length - 1; i++) {
-        const s1 = gameState.stations[line.stationIds[i]] as Station;
-        const s2 = gameState.stations[line.stationIds[i + 1]] as Station;
-        if (!s1 || !s2) continue;
-
-        const key = getSegmentKey(s1.id, s2.id);
-        const sharedLines = segmentToLinesMap[key] || [];
-        const index = sharedLines.indexOf(line.id);
-        const N = sharedLines.length;
-
-        let p1: [number, number] = [s1.lat, s1.lng];
-        let p2: [number, number] = [s2.lat, s2.lng];
-
-        if (N > 1 && index !== -1) {
-          const dy = s2.lat - s1.lat;
-          const dx = s2.lng - s1.lng;
-          const dist = Math.sqrt(dx * dx + dy * dy);
-          if (dist > 0) {
-            const ny = -dx / dist;
-            const nx = dy / dist;
-            const baseSpacing = 0.00045; // Perfect latitude/longitude offset spacing for dynamic parallel track positioning
-            const shift = index - (N - 1) / 2;
-            const offsetLat = ny * shift * baseSpacing;
-            const offsetLng = nx * shift * baseSpacing;
-
-            p1 = [s1.lat + offsetLat, s1.lng + offsetLng];
-            p2 = [s2.lat + offsetLat, s2.lng + offsetLng];
-          }
-        }
-
-        // Generate and draw organic curved bezier tracks connecting stations
-        L.polyline(getBezierCurvePoints(p1, p2), {
-          color: line.color,
-          weight: 6,
-          opacity: 0.8,
-          lineCap: 'round',
-          lineJoin: 'round'
-        }).addTo(overlay);
-      }
-    });
-
-    // C. Draw subway station custom markers
-    (Object.values(gameState.stations) as Station[]).forEach((station) => {
-      const isSelected = selectedStationId === station.id;
-      const totalWait = (Object.values(station.waitingPassengers) as number[]).reduce((a, b) => a + b, 0);
-      const isOvercrowded = totalWait >= station.capacity * 0.8;
-
-      const pulseClass = isOvercrowded ? 'marker-overcrowd-pulse' : '';
-      
-      let stationInnerHtml = '';
-      let labelOffsetClass = 'top-4';
-
-      if (station.connectedLines.length === 0) {
-        stationInnerHtml = `
-          <div class="w-4 h-4 rounded-full border-2 border-white flex items-center justify-center bg-slate-600 shadow-[0_0_10px_rgba(0,0,0,0.5)] transition-transform duration-200" style="transform: scale(${isSelected ? 1.35 : 1.0})">
-            <div class="w-1.5 h-1.5 bg-white rounded-full"></div>
-          </div>
-        `;
-      } else if (station.connectedLines.length === 1) {
-        const line = gameState.lines[station.connectedLines[0]] as Line;
-        const color = line?.color || '#a855f7';
-        stationInnerHtml = `
-          <div class="w-4 h-4 rounded-full border-2 border-white flex items-center justify-center shadow-[0_0_10px_rgba(0,0,0,0.5)] transition-transform duration-200" style="background-color: ${color}; transform: scale(${isSelected ? 1.35 : 1.0})">
-            <div class="w-1.5 h-1.5 bg-white rounded-full"></div>
-          </div>
-        `;
-      } else {
-        // Multi-line interchange station! Draw a beautiful metallic gold/white outer ring with multi-colored segment dots underneath/beside
-        const colors = station.connectedLines.map(lineId => (gameState.lines[lineId] as Line)?.color).filter(Boolean);
-        const dotsHtml = colors.map(col => `<div class="w-1.5 h-1.5 rounded-full border border-black/50" style="background-color: ${col}"></div>`).join('');
-        labelOffsetClass = 'top-9';
-        stationInnerHtml = `
-          <div class="flex flex-col items-center gap-0.5 transition-transform duration-200" style="transform: scale(${isSelected ? 1.355 : 1.0})">
-            <div class="w-5 h-5 rounded-full border-2 border-amber-400 bg-white flex items-center justify-center shadow-[0_0_12px_rgba(251,191,36,0.6)]">
-              <div class="w-2.5 h-2.5 bg-slate-900 rounded-full flex items-center justify-center">
-                <div class="w-1.5 h-1.5 bg-white rounded-full"></div>
-              </div>
-            </div>
-            <div class="flex gap-0.5 bg-slate-950/90 px-1 py-0.5 rounded-full border border-white/10 shadow-sm">
-              ${dotsHtml}
-            </div>
-          </div>
-        `;
-      }
-
-      const customHtml = L.divIcon({
-        className: 'station-div-marker',
-        html: `
-          <div class="relative flex items-center justify-center ${pulseClass}">
-            ${stationInnerHtml}
-            <div class="absolute ${labelOffsetClass} left-1/2 -translate-x-1/2 whitespace-nowrap bg-slate-950/90 border border-slate-800 text-[9px] font-mono leading-none py-0.5 px-1 rounded shadow-lg text-slate-200 select-none flex items-center gap-1">
-              <span>${station.name}</span>
-              ${totalWait > 0 ? `<span class="text-amber-400 font-bold">(${totalWait})</span>` : ''}
-              ${station.connectedLines.length > 1 ? `<span class="text-[8px] uppercase tracking-wider text-amber-400 font-sans border-l border-white/10 pl-1 font-bold">Transfer Hub</span>` : ''}
-            </div>
-          </div>
-        `,
-        iconSize: [20, 20],
-        iconAnchor: [10, 10]
-      });
-
-      const marker = L.marker([station.lat, station.lng], { icon: customHtml });
-      marker.on('click', () => {
-        // If track laying active
-        if (buildMode === 'edit-line-tracks' && selectedLineIdForTracks) {
-          handleLinkStationToLine(selectedLineIdForTracks, station.id);
-        } else {
-          setSelectedStationId(station.id);
-          setSelectedLineId(null);
-        }
-      });
-      marker.addTo(overlay);
-    });
-
-    // D. Animated moving Trains
-    (Object.values(gameState.trains) as Train[]).forEach((train) => {
-      const line = gameState.lines[train.lineId] as Line;
-      if (!line) return;
-
-      const color = line.color || '#e2e8f0';
-      const isBroken = train.status === 'broken';
-
-      let trainLat = train.lat;
-      let trainLng = train.lng;
-
-      // Smooth en-route dynamic track alignment offset and Bezier curve tracking for trains
-      if (!train.currentStationId) {
-        const targetIdx = train.targetStationIndex;
-        const prevIdx = train.direction === 1 ? targetIdx - 1 : targetIdx + 1;
-        const targetStationId = line.stationIds[targetIdx];
-        const prevStationId = line.stationIds[prevIdx];
-
-        if (targetStationId && prevStationId) {
-          const s1 = gameState.stations[prevStationId];
-          const s2 = gameState.stations[targetStationId];
-          if (s1 && s2) {
-            const key = getSegmentKey(s1.id, s2.id);
-            const sharedLines = segmentToLinesMap[key] || [];
-            const index = sharedLines.indexOf(line.id);
-            const N = sharedLines.length;
-
-            let p1: [number, number] = [s1.lat, s1.lng];
-            let p2: [number, number] = [s2.lat, s2.lng];
-
-            if (N > 1 && index !== -1) {
-              const dy = s2.lat - s1.lat;
-              const dx = s2.lng - s1.lng;
-              const dist = Math.sqrt(dx * dx + dy * dy);
-              if (dist > 0) {
-                const ny = -dx / dist;
-                const nx = dy / dist;
-                const baseSpacing = 0.00045;
-                const shift = index - (N - 1) / 2;
-                const offsetLat = ny * shift * baseSpacing;
-                const offsetLng = nx * shift * baseSpacing;
-
-                p1 = [s1.lat + offsetLat, s1.lng + offsetLng];
-                p2 = [s2.lat + offsetLat, s2.lng + offsetLng];
-              }
-            }
-
-            // Curve tracing: calculate progression t (0 to 1) along s1 -> s2 straight path
-            const straightDy = s2.lat - s1.lat;
-            const straightDx = s2.lng - s1.lng;
-            const straightDist = Math.sqrt(straightDx * straightDx + straightDy * straightDy);
-            
-            if (straightDist > 0) {
-              const progDy = train.lat - s1.lat;
-              const progDx = train.lng - s1.lng;
-              const progDist = Math.sqrt(progDx * progDx + progDy * progDy);
-              const t0 = progDist / straightDist;
-              const t = Math.max(0, Math.min(1, t0));
-
-              // Compute the exact Bezier control point for offsetted points p1 and p2
-              const isOrdered = p1[0] < p2[0] || (p1[0] === p2[0] && p1[1] < p2[1]);
-              const start = isOrdered ? p1 : p2;
-              const end = isOrdered ? p2 : p1;
-
-              const dy = end[0] - start[0];
-              const dx = end[1] - start[1];
-              const dist = Math.sqrt(dx * dx + dy * dy);
-
-              if (dist > 0) {
-                const ny = -dx / dist;
-                const nx = dy / dist;
-                const curvature = trackCurvature;
-                const offsetAmount = dist * curvature;
-
-                const cpLat = (start[0] + end[0]) / 2 + ny * offsetAmount;
-                const cpLng = (start[1] + end[1]) / 2 + nx * offsetAmount;
-
-                const mt = 1 - t;
-                trainLat = mt * mt * p1[0] + 2 * mt * t * cpLat + t * t * p2[0];
-                trainLng = mt * mt * p1[1] + 2 * mt * t * cpLng + t * t * p2[1];
-              }
-            }
-          }
-        }
-      }
-
-      const trainIcon = L.divIcon({
-        className: 'train-div-marker',
-        html: `
-          <div class="relative flex items-center justify-center animate-pulse">
-            <div class="w-4 h-4 rounded border-2 border-slate-950 text-white flex items-center justify-center shadow-md font-bold text-[8px] transition-all" style="background-color: ${isBroken ? '#ef4444' : color}; transform: rotate(${train.direction === 1 ? '45deg' : '-45deg'})">
-              🚇
-            </div>
-            <div class="absolute -top-6 bg-slate-950/95 text-[8px] font-mono py-0.5 px-1 border border-slate-800 rounded shadow text-slate-300 pointer-events-none whitespace-nowrap">
-              ${train.name} (${train.occupancy}/${train.capacity})
-            </div>
-          </div>
-        `,
-        iconSize: [16, 16],
-        iconAnchor: [8, 8]
-      });
-
-      L.marker([trainLat, trainLng], { icon: trainIcon }).addTo(overlay);
-    });
-
-  }, [gameState, selectedStationId, buildMode, selectedLineIdForTracks, trackCurvature, activeDistrictId, showDensity, districtTypeFilter, minDensityFilter]);
 
   // Move camera set center on active city change
   useEffect(() => {
@@ -963,32 +853,114 @@ export default function App() {
     }
   };
 
+  const handleUpdateLine = async (lineId: string, name: string, color: string) => {
+    try {
+      const res = await fetch('/api/game/line/update', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ lineId, name, color })
+      });
+      const data = await res.json();
+      if (data.status === 'ok') {
+        setGameState(data.gameState);
+        showToast('Linha atualizada com sucesso!');
+      }
+    } catch (err) {
+      showToast('Erro ao atualizar linha.');
+    }
+  };
+
   const handleLinkStationToLine = async (lineId: string, stationId: string) => {
     const line = gameState?.lines[lineId];
     if (!line) return;
 
-    // Check if station is already part of the line to prevent duplicate platforms/connections
-    if (line.stationIds.includes(stationId)) {
-      showToast('This station is already linked to this line.');
+    const startId = line.stationIds[0];
+    const endId = line.stationIds[line.stationIds.length - 1];
+    
+    // CASE A: Picking the ORIGIN of the new segment
+    if (!trackExtensionSourceId) {
+      // If line is empty, this is the very first station
+      if (line.stationIds.length === 0) {
+        setTrackExtensionSourceId(stationId);
+        // We initialize the line with just this one station immediately
+        await updateLineStations(lineId, [stationId]);
+        showToast('Ponto inicial definido. Agora clique na próxima estação para conectar.');
+        return;
+      }
+
+      // If line exists, must click an END (tip) to start extending
+      if (stationId === startId || stationId === endId) {
+        setTrackExtensionSourceId(stationId);
+        showToast(`Origem selecionada: ${gameState.stations[stationId]?.name}. Clique no destino.`);
+      } else if (line.stationIds.includes(stationId)) {
+        showToast('Selecione uma estação na PONTA da linha para estender.');
+      } else {
+        showToast('Primeiro selecione uma estação que já faz parte da linha para estender.');
+      }
       return;
     }
 
-    const updatedIds = [...line.stationIds, stationId];
+    // CASE B: Already have an origin, now picking the DESTINATION
+    const originId = trackExtensionSourceId;
+    setTrackExtensionSourceId(null); // Reset for next segment
+
+    if (originId === stationId) {
+      showToast('Origem e destino são iguais. Cancelado.');
+      return;
+    }
+
+    let updatedIds = [...line.stationIds];
+
+    // Check if destination is already in the line (loop closure or middle station error)
+    if (line.stationIds.includes(stationId)) {
+      // Logic for closing loops
+      const sId = line.stationIds[0];
+      const eId = line.stationIds[line.stationIds.length - 1];
+      
+      if ((originId === sId && stationId === eId) || (originId === eId && stationId === sId)) {
+        // Close loop
+        if (originId === sId) {
+           updatedIds = [stationId, ...line.stationIds];
+        } else {
+           updatedIds = [...line.stationIds, stationId];
+        }
+        showToast(`Linha circular fechada: ${line.name}!`);
+      } else {
+        showToast('Esta estação já faz parte da linha no meio. Segmento ignorado.');
+        return;
+      }
+    } else {
+      // New station extension
+      if (originId === startId) {
+        updatedIds = [stationId, ...line.stationIds];
+      } else if (originId === endId) {
+        updatedIds = [...line.stationIds, stationId];
+      } else {
+        // This shouldn't happen if UI logic holds, but fallback:
+        showToast('Erro: Origem não é uma extremidade da linha.');
+        return;
+      }
+      showToast(`Trecho construído até ${gameState.stations[stationId]?.name}!`);
+    }
+
+    await updateLineStations(lineId, updatedIds);
+  };
+
+  const updateLineStations = async (lineId: string, stationIds: string[]) => {
     try {
       const res = await fetch('/api/game/line/stations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ lineId, stationIds: updatedIds })
+        body: JSON.stringify({ lineId, stationIds })
       });
       const data = await res.json();
       if (data.error) {
         showToast(data.error);
       } else {
         setGameState(data.gameState);
-        showToast(`Linked station to ${line.name}! New track segment laid.`);
       }
     } catch (err) {
-      showToast('Error drawing track segments.');
+      showToast('Erro ao atualizar os segmentos da linha.');
     }
   };
 
@@ -1452,7 +1424,7 @@ export default function App() {
                     onMouseLeave={() => setActiveDistrictId(null)}
                     onClick={() => {
                       if (mapInstanceRef.current) {
-                        mapInstanceRef.current.flyTo([d.lat, d.lng], 13.5);
+                        mapInstanceRef.current.setView([d.lat, d.lng], 13.5);
                         showToast(`📍 Centralizando em ${d.name}`);
                       }
                     }}
@@ -1734,6 +1706,7 @@ export default function App() {
                       onClick={() => {
                         setBuildMode(actObj.mode as any);
                         setClickedPosition(null); // Clear click coordinate memory to prevent accidental stale triggers
+                        setTrackExtensionSourceId(null); // Clear selection state
                         if (actObj.mode === 'edit-line-tracks') {
                           // Default select first line if available
                           const l = Object.keys(gameState.lines)[0];
@@ -1762,7 +1735,10 @@ export default function App() {
                 <span className="font-semibold text-indigo-300 font-mono text-[10px]">Active Line:</span>
                 <select
                   value={selectedLineIdForTracks || ''}
-                  onChange={(e) => setSelectedLineIdForTracks(e.target.value)}
+                  onChange={(e) => {
+                    setSelectedLineIdForTracks(e.target.value);
+                    setTrackExtensionSourceId(null);
+                  }}
                   className="bg-black border border-white/10 rounded px-2.5 py-1 text-xs text-white outline-none font-mono focus:border-indigo-550"
                   id="line-track-select"
                 >
@@ -1773,12 +1749,12 @@ export default function App() {
                   ))}
                 </select>
                 <div className="text-[10px] text-slate-400 font-sans border-l border-white/10 pl-3">
-                  💡 <span className="font-bold text-slate-200">Click consecutive Station pins</span> sequentially on the map to bind tracks!
+                  💡 <span className="font-bold text-slate-200 uppercase">Fluxo de Construção:</span> Clique em uma estação da linha para definir a <span className="text-amber-400 font-bold">Origem</span>, depois no <span className="text-indigo-400 font-bold">Destino</span> para estender!
                 </div>
               </div>
             )}
 
-            {/* Leaflet physical div element */}
+            {/* Map Viewport Area */}
             <div ref={mapContainerRef} className="w-full flex-1 z-10" id="leaflet-element-holder" />
 
             {/* Custom empty space map click popups station building input name modal */}
@@ -1876,8 +1852,38 @@ export default function App() {
                       {/* Summary details */}
                       <div className="flex justify-between text-[10px] text-slate-500 font-mono">
                         <span>{line.stationIds.length} Platforms connected</span>
-                        <span className="text-indigo-400 font-bold underline">Configure</span>
+                        <div className="flex items-center gap-2">
+                           <input 
+                              type="color" 
+                              value={line.color} 
+                              onChange={(e) => {
+                                e.stopPropagation();
+                                handleUpdateLine(line.id, line.name, e.target.value);
+                              }}
+                              onClick={(e) => e.stopPropagation()}
+                              className="w-4 h-4 rounded cursor-pointer border-none bg-transparent"
+                              title="Alterar cor da linha"
+                           />
+                           <span className="text-indigo-400 font-bold underline">Configure</span>
+                        </div>
                       </div>
+
+                      {line.statistics && (
+                        <div className="flex flex-wrap gap-4 mt-1 border-t border-white/5 pt-1.5 text-[9px] font-mono">
+                          <div className="flex items-center gap-1.5">
+                            <Users className="w-3 h-3 text-slate-500" />
+                            <span className="text-emerald-400 font-bold">{line.statistics.totalPassengersCarried.toLocaleString()}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <Activity className="w-3 h-3 text-slate-500" />
+                            <span className="text-indigo-400 font-bold">{line.statistics.currentTrainsCount} trains</span>
+                          </div>
+                          <div className="flex items-center gap-1.5">
+                            <DollarSign className="w-3 h-3 text-slate-500" />
+                            <span className="text-amber-400 font-bold">${line.statistics.dailyRevenue.toLocaleString()}</span>
+                          </div>
+                        </div>
+                      )}
 
                       {/* Actions drawer if currently clicked match */}
                       {isCurMatch && (
@@ -2014,21 +2020,16 @@ export default function App() {
                   id="new-line-name"
                 />
                 
-                {/* Color swatches */}
-                <select
-                  value={newLineColor}
-                  onChange={(e) => setNewLineColor(e.target.value)}
-                  className="bg-black border border-white/10 rounded-lg text-[10px] p-2 text-slate-200 outline-none h-8 font-mono"
-                  id="new-line-color"
-                >
-                  <option value="#ef4444">🔴 Red</option>
-                  <option value="#3b82f6">🔵 Blue</option>
-                  <option value="#10b981">🟢 Green</option>
-                  <option value="#ec4899">🌸 Pink</option>
-                  <option value="#f97316">🟠 Orange</option>
-                  <option value="#eab308">🟡 Gold</option>
-                  <option value="#a855f7">🟣 Purple</option>
-                </select>
+                <div className="relative group">
+                  <input
+                    type="color"
+                    value={newLineColor}
+                    onChange={(e) => setNewLineColor(e.target.value)}
+                    className="w-10 h-8 rounded-lg bg-black border border-white/10 cursor-pointer p-1"
+                    id="new-line-color"
+                    title="Selecione a cor da linha"
+                  />
+                </div>
               </div>
 
               {/* Rails mapping types selector */}

@@ -1,0 +1,6 @@
+{
+  "name": "Metro Transit Simulation & City Subway Builder",
+  "description": "An interactive full-stack transit management and city subway network builder simulation game using real-world map data.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

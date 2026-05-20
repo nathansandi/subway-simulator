@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+/* Fine-tune leaflet maps styles for beautiful dark-themed dashboard mapping */
+.leaflet-container {
+  background: #090a0c !important; /* matches core Immersive theme #090a0c background */
+  width: 100% !important;
+  height: 100% !important;
+}
+
+#leaflet-element-holder {
+  width: 100%;
+  height: 100%;
+  min-height: 480px;
+}
+
+/* Scrollbars styling for a polished, cohesive visual theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #090a0c;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+
+/* Custom pulsing indicator animations for overcrowded station warnings */
+@keyframes ring-pulse {
+  0% {
+    transform: scale(0.9);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(2.2);
+    opacity: 0;
+  }
+}
+
+.marker-overcrowd-pulse {
+  position: relative;
+}
+.marker-overcrowd-pulse::after {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: -6px;
+  right: -6px;
+  bottom: -6px;
+  border: 2px solid #ef4444;
+  border-radius: 50%;
+  animation: ring-pulse 1.4s infinite ease-out;
+  pointer-events: none;
+}
+
+/* Custom transparent futuristic layout tooltip overrides */
+.leaflet-tooltip.custom-district-tooltip {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+}
+.leaflet-tooltip-top.custom-district-tooltip::before,
+.leaflet-tooltip-bottom.custom-district-tooltip::before,
+.leaflet-tooltip-left.custom-district-tooltip::before,
+.leaflet-tooltip-right.custom-district-tooltip::before {
+  border: none !important;
+  display: none !important;
+}

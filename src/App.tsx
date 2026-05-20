@@ -253,6 +253,7 @@ export default function App() {
   };
 
   // Bezier curve calculations for organic/flexible visuals with parallel offset tapering
+  // Improved with Cubic Bezier and Octolinear-aware routing for a "Brand New Subway" aesthetic
   const getBezierCurvePoints = (
     p1: [number, number],
     p2: [number, number],
@@ -266,36 +267,85 @@ export default function App() {
 
     if (dist === 0) return [p1, p2];
 
-    const nyChord = -dx / dist;
-    const nxChord = dy / dist;
-    const arcOffset = dist * trackCurvature;
-    const cpLat = (p1[0] + p2[0]) / 2 + nyChord * arcOffset;
-    const cpLng = (p1[1] + p2[1]) / 2 + nxChord * arcOffset;
+    // Perfect straight line if curvature is 0
+    if (trackCurvature === 0) {
+      const straightPoints: [number, number][] = [];
+      for (let s = 0; s <= numSteps; s++) {
+        const t = s / numSteps;
+        const baseLat = p1[0] + dy * t;
+        const baseLng = p1[1] + dx * t;
+        if (offset && offset.amt !== 0) {
+          const ny = -dx / dist;
+          const nx = dy / dist;
+          const taper = Math.pow(Math.sin(t * Math.PI), 0.2);
+          const multiplier = isCanonical ? 1 : -1;
+          straightPoints.push([baseLat + ny * offset.amt * multiplier * taper, baseLng + nx * offset.amt * multiplier * taper]);
+        } else {
+          straightPoints.push([baseLat, baseLng]);
+        }
+      }
+      return straightPoints;
+    }
+
+    // Determine "best fit" octolinear exit angles from stations
+    // This creates the professional transit map look where lines exit stations on 45/90 deg
+    const getControlPoint = (start: [number, number], end: [number, number], strength: number) => {
+      const dLat = end[0] - start[0];
+      const dLng = end[1] - start[1];
+      const absLat = Math.abs(dLat);
+      const absLng = Math.abs(dLng);
+      
+      // Alignment Check: If stations are already close to an octolinear axis (0, 45, 90), favor a straight exit
+      const isVertical = absLat > absLng * 3.0; // Sharp threshold for vertical
+      const isHorizontal = absLng > absLat * 3.0; // Sharp threshold for horizontal
+      const isDiagonal = Math.abs(absLat - absLng) < Math.min(absLat, absLng) * 0.25; // Close to 45 deg
+
+      if (isVertical || isHorizontal || isDiagonal) {
+        // Soften the curve into a straight-ish line for aligned segments
+        return [start[0] + dLat * strength * 0.5, start[1] + dLng * strength * 0.5] as [number, number];
+      }
+
+      let cpLat = start[0];
+      let cpLng = start[1];
+
+      // Smart direction choice: prefer the dominant axis for the "S" or "L" curve
+      if (absLat > absLng) {
+        cpLat += dLat * strength; // Primary Vertical exit
+      } else {
+        cpLng += dLng * strength; // Primary Horizontal exit
+      }
+      
+      return [cpLat, cpLng] as [number, number];
+    };
+
+    // Strength of the "curving" effect
+    const curveStrength = Math.min(0.5, trackCurvature + 0.2);
+    
+    // Cubic Control Points
+    const cp1 = getControlPoint(p1, p2, curveStrength);
+    const cp2 = getControlPoint(p2, p1, curveStrength);
 
     const bezierPoints: [number, number][] = [];
     for (let s = 0; s <= numSteps; s++) {
       const t = s / numSteps;
       const mt = 1 - t;
 
-      // Quadratic Bezier: B(t) = (1-t)^2*P0 + 2(1-t)t*P1 + t^2*P2
-      const baseLat = mt * mt * p1[0] + 2 * mt * t * cpLat + t * t * p2[0];
-      const baseLng = mt * mt * p1[1] + 2 * mt * t * cpLng + t * t * p2[1];
+      // Cubic Bezier: B(t) = (1-t)^3*P0 + 3(1-t)^2*t*P1 + 3(1-t)t^2*P2 + t^3*P3
+      const baseLat = mt * mt * mt * p1[0] + 3 * mt * mt * t * cp1[0] + 3 * mt * t * t * cp2[0] + t * t * t * p2[0];
+      const baseLng = mt * mt * mt * p1[1] + 3 * mt * mt * t * cp1[1] + 3 * mt * t * t * cp2[1] + t * t * t * p2[1];
 
       if (offset && offset.amt !== 0) {
-        // Calculate tangent B'(t) = 2(1-t)(P1-P0) + 2t(P2-P1)
-        const dLat = 2 * mt * (cpLat - p1[0]) + 2 * t * (p2[0] - cpLat);
-        const dLng = 2 * mt * (cpLng - p1[1]) + 2 * t * (p2[1] - cpLng);
+        // Calculate tangent B'(t) to determine perpendicular offset direction
+        const dLat = 3 * mt * mt * (cp1[0] - p1[0]) + 6 * mt * t * (cp2[0] - cp1[0]) + 3 * t * t * (p2[0] - cp2[0]);
+        const dLng = 3 * mt * mt * (cp1[1] - p1[1]) + 6 * mt * t * (cp2[1] - cp1[1]) + 3 * t * t * (p2[1] - cp2[1]);
         const dDist = Math.sqrt(dLat * dLat + dLng * dLng);
         
         if (dDist > 0) {
           const tny = -dLng / dDist; // Perpendicular to tangent
           const tnx = dLat / dDist;
           
-          // Taper: quickly reach full offset, stay parallel, then quickly converge toward stations
-          // Use a sharp power-sin for a flat top (very parallel into stations)
-          const taper = Math.pow(Math.sin(t * Math.PI), 0.15);
-          
-          // Normalize offset direction based on canonical station order of the segment
+          // Tapering to ensure clean entry into circular stations
+          const taper = Math.pow(Math.sin(t * Math.PI), 0.2);
           const multiplier = isCanonical ? 1 : -1;
           
           bezierPoints.push([baseLat + tny * offset.amt * multiplier * taper, baseLng + tnx * offset.amt * multiplier * taper]);

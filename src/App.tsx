@@ -26,6 +26,7 @@ import { GameState, Station, Line, Train } from './types';
 import { CitySelector } from './components/CitySelector';
 import { EconomyPanel } from './components/EconomyPanel';
 import { SocialFeed } from './components/SocialFeed';
+import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
   // Game state core
@@ -75,6 +76,7 @@ export default function App() {
 
   // Sandbox tools visibility (collapsed by default to keep Left Side Panel extremely clean)
   const [showSandboxTools, setShowSandboxTools] = useState(false);
+  const [showSocialFeed, setShowSocialFeed] = useState(true);
 
   const fetchSavesList = async () => {
     try {
@@ -686,7 +688,7 @@ export default function App() {
         setStationFormName(chosenIdea + suffix);
         setShowStationModal(true);
       } else if (buildMode === 'select') {
-        showToast("💡 Pro-Tip: To build a station, click '🔨 Build Station ($150k)' in the map overlay first, then click on the map!");
+        showToast("💡 Pro-Tip: To build a station, click '🔨 Build Station ($80k)' in the map overlay first, then click on the map!");
         setClickedPosition(null);
       } else {
         setClickedPosition(null);
@@ -1180,7 +1182,7 @@ export default function App() {
                 <div className="bg-emerald-600/10 text-emerald-400 w-6 h-6 rounded-lg font-mono font-bold flex items-center justify-center shrink-0">1</div>
                 <div>
                   <p className="font-bold text-white mb-0.5">Establish Platforms</p>
-                  <p className="opacity-80">Toggle <span className="text-emerald-400 font-bold">🔨 Build Station</span> mode on the map menu, then click any empty space on the real-world map to establish a new station hub ($150,000).</p>
+                  <p className="opacity-80">Toggle <span className="text-emerald-400 font-bold">🔨 Build Station</span> mode on the map menu, then click any empty space on the real-world map to establish a new station hub ($80,000).</p>
                 </div>
               </div>
               <div className="flex gap-3">
@@ -1956,16 +1958,16 @@ export default function App() {
                               <div className="flex flex-col">
                                 <span className="text-[8px] text-slate-500 uppercase font-mono font-bold">Investimento</span>
                                 <span className="text-xs font-bold text-emerald-400 font-mono">
-                                  ${(50000 + newTrainCapacity * 200 + newTrainSpeed * 150).toLocaleString()}
+                                  ${(20000 + newTrainCapacity * 100 + newTrainSpeed * 80).toLocaleString()}
                                 </span>
                               </div>
 
                               <button
                                 type="button"
                                 onClick={(e) => { e.stopPropagation(); handleDeployTrain(line.id); }}
-                                disabled={line.stationIds.length < 2 || gameState.economy.budget < (50000 + newTrainCapacity * 200 + newTrainSpeed * 150)}
+                                disabled={line.stationIds.length < 2 || gameState.economy.budget < (20000 + newTrainCapacity * 100 + newTrainSpeed * 80)}
                                 className={`font-mono text-[9px] uppercase font-bold px-2.5 py-1.5 rounded-lg text-white shadow transition-all active:scale-95 cursor-pointer flex items-center gap-1 ${
-                                  line.stationIds.length >= 2 && gameState.economy.budget >= (50000 + newTrainCapacity * 200 + newTrainSpeed * 150)
+                                  line.stationIds.length >= 2 && gameState.economy.budget >= (20000 + newTrainCapacity * 100 + newTrainSpeed * 80)
                                     ? 'bg-emerald-600 hover:bg-emerald-500 hover:shadow-emerald-500/10'
                                     : 'bg-slate-700 opacity-40 cursor-not-allowed'
                                 }`}
@@ -2177,13 +2179,37 @@ export default function App() {
           />
 
           {/* Scrolling citizens tweets commentary and AI Strategy advisor */}
-          <SocialFeed
-            posts={gameState.citizenPosts}
-            events={gameState.activeEvents}
-            aiReport={aiReport}
-            loadingAi={loadingAi}
-            onTriggerAi={handleTriggerGeminiAdvisor}
-          />
+          <div className="flex flex-col gap-2 shrink-0">
+            <button
+              onClick={() => setShowSocialFeed(!showSocialFeed)}
+              className="w-full bg-slate-900/40 hover:bg-slate-900/80 border border-white/5 rounded-xl p-2 text-[10px] font-mono font-bold uppercase text-slate-400 flex items-center justify-between transition-all cursor-pointer"
+            >
+              <div className="flex items-center gap-2">
+                <Users className="w-3 h-3 text-indigo-400" />
+                <span>City Social Feed</span>
+              </div>
+              <span className="text-[10px] opacity-60">{showSocialFeed ? 'Hide' : 'Expand'}</span>
+            </button>
+            
+            <AnimatePresence>
+              {showSocialFeed && (
+                <motion.div
+                  initial={{ height: 0, opacity: 0 }}
+                  animate={{ height: 'auto', opacity: 1 }}
+                  exit={{ height: 0, opacity: 0 }}
+                  className="overflow-hidden"
+                >
+                  <SocialFeed
+                    posts={gameState.citizenPosts}
+                    events={gameState.activeEvents}
+                    aiReport={aiReport}
+                    loadingAi={loadingAi}
+                    onTriggerAi={handleTriggerGeminiAdvisor}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
         </section>
 
       </main>
